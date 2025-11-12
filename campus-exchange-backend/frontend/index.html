@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Campus Exchange</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="authSection" class="container">
+    <h2 id="authTitle">Login</h2>
+    <form id="authForm">
+      <input id="fullname" type="text" placeholder="Full Name" class="hidden" />
+      <input id="email" type="email" placeholder="Email" required />
+      <input id="password" type="password" placeholder="Password" required />
+      <button id="authBtn" type="submit">Login</button>
+    </form>
+    <p id="toggleAuth">
+      Don’t have an account? <span>Sign Up</span>
+    </p>
+  </div>
+
+  <div id="marketplaceSection" class="hidden">
+    <header>
+      <h2>Welcome, <span id="userName"></span> 👋</h2>
+      <button id="logoutBtn">Logout</button>
+    </header>
+
+    <nav>
+      <button id="viewProductsBtn" class="active">View Listings</button>
+      <button id="addProductBtn">Sell Item</button>
+    </nav>
+
+    <!-- Product Listings -->
+    <div id="productContainer"></div>
+
+    <!-- Add Product Form -->
+    <form id="addProductForm" class="hidden">
+      <h3>Post New Item</h3>
+      <input type="text" id="title" placeholder="Product Title" required />
+      <textarea id="description" placeholder="Description"></textarea>
+      <input type="number" id="price" placeholder="Price" required />
+      <select id="itemCondition">
+        <option>New</option>
+        <option>Like New</option>
+        <option>Good</option>
+        <option>Fair</option>
+        <option>For Parts</option>
+      </select>
+      <button type="submit">Add Listing</button>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
