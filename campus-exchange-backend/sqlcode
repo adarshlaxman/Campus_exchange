@@ -1,28 +1,26 @@
-sql code
 -- =======================================================
--- CAMPUS EXCHANGE (PROJECT COMPONENTS EDITION)
--- Author: Adarsh L (PES2UG23CS025) 
-
--- FINAL FULL VERSION (Fully Functional & Validated)
+-- CAMPUS EXCHANGE - FINAL COMPLETE SQL SCRIPT
+-- Authors: Adarsh L (PES2UG23CS025)
+-- Purpose: Full DB + triggers + procedures + robust admin views
 -- =======================================================
 
--- 1️⃣ CREATE + RESET DATABASE
+-- 0️⃣ Safety: Drop & recreate database (comment out if you don't want reset)
 DROP DATABASE IF EXISTS campus_exchange;
 CREATE DATABASE campus_exchange;
 USE campus_exchange;
 
--- Disable foreign key checks for safe recreation
+-- =======================================================
+-- 1️⃣ TABLES
+-- =======================================================
 SET FOREIGN_KEY_CHECKS = 0;
+
 DROP TABLE IF EXISTS Feedback;
 DROP TABLE IF EXISTS Transactions;
 DROP TABLE IF EXISTS Components;
 DROP TABLE IF EXISTS Projects;
 DROP TABLE IF EXISTS Users;
-SET FOREIGN_KEY_CHECKS = 1;
 
--- =======================================================
--- 2️⃣ TABLE CREATION
--- =======================================================
+SET FOREIGN_KEY_CHECKS = 1;
 
 CREATE TABLE Users (
   UserId INT AUTO_INCREMENT PRIMARY KEY,
@@ -75,12 +73,16 @@ CREATE TABLE Feedback (
   FOREIGN KEY (ComponentId) REFERENCES Components(ComponentId) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- helpful index for joins/searches
+CREATE INDEX idx_transactions_component ON Transactions(ComponentId);
+CREATE INDEX idx_transactions_status ON Transactions(Status);
+
 -- =======================================================
--- 3️⃣ TRIGGERS
+-- 2️⃣ TRIGGERS
 -- =======================================================
 DELIMITER $$
 
--- Prevent duplicate purchase of sold components
+-- Prevent buying already sold components (first-level guard)
 CREATE TRIGGER trg_before_transaction_insert
 BEFORE INSERT ON Transactions
 FOR EACH ROW
@@ -92,24 +94,40 @@ BEGIN
   END IF;
 END$$
 
--- Automatically mark component as Sold after purchase
+-- Prevent more than one Completed transaction for the same component
+CREATE TRIGGER trg_before_transactions_unique_completed
+BEFORE INSERT ON Transactions
+FOR EACH ROW
+BEGIN
+  IF NEW.Status = 'Completed' THEN
+    IF EXISTS (
+      SELECT 1 FROM Transactions t
+      WHERE t.ComponentId = NEW.ComponentId AND t.Status = 'Completed'
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'A completed transaction already exists for this component.';
+    END IF;
+  END IF;
+END$$
+
+-- After insert: mark component sold when transaction inserted (keeps status in sync)
 CREATE TRIGGER trg_after_transaction_insert
 AFTER INSERT ON Transactions
 FOR EACH ROW
 BEGIN
-  UPDATE Components SET Status = 'Sold' WHERE ComponentId = NEW.ComponentId;
+  IF NEW.Status = 'Completed' THEN
+    UPDATE Components SET Status = 'Sold' WHERE ComponentId = NEW.ComponentId;
+  END IF;
 END$$
 
 DELIMITER ;
 
 -- =======================================================
--- 4️⃣ STORED PROCEDURES
+-- 3️⃣ STORED PROCEDURES
 -- =======================================================
-
--- ✅ Strict purchase validation (exact payment = component price)
- DROP PROCEDURE IF EXISTS PurchaseComponent;
 DELIMITER $$
 
+-- PurchaseComponent: strict validation (exact payment required)
+DROP PROCEDURE IF EXISTS PurchaseComponent$$
 CREATE PROCEDURE PurchaseComponent(
   IN p_BuyerId INT,
   IN p_ComponentId INT,
@@ -123,42 +141,43 @@ BEGIN
 
   START TRANSACTION;
     SELECT Status, Price INTO current_status, component_price
-    FROM Components 
-    WHERE ComponentId = p_ComponentId 
+    FROM Components
+    WHERE ComponentId = p_ComponentId
     FOR UPDATE;
 
+    -- if no row found, component_price will be NULL (guard)
     IF component_price IS NULL THEN
       ROLLBACK;
       SET msg = 'Component not found.';
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
+
     ELSEIF current_status = 'Sold' THEN
       ROLLBACK;
       SET msg = 'Component already sold.';
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
+
     ELSEIF p_Amount < component_price THEN
       ROLLBACK;
       SET msg = CONCAT('Insufficient payment. Component costs Rs ', component_price);
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
+
     ELSEIF p_Amount > component_price THEN
       ROLLBACK;
       SET msg = CONCAT('Overpayment detected. Component costs Rs ', component_price);
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
-    ELSE
-      -- ✅ Valid payment → proceed safely
-      INSERT INTO Transactions (BuyerId, ComponentId, Amount, PaymentMethod)
-      VALUES (p_BuyerId, p_ComponentId, p_Amount, p_PaymentMethod);
 
-      UPDATE Components SET Status = 'Sold' WHERE ComponentId = p_ComponentId;
+    ELSE
+      -- valid: insert transaction (Completed) and status updated by AFTER INSERT trigger
+      INSERT INTO Transactions (BuyerId, ComponentId, Amount, PaymentMethod, Status)
+      VALUES (p_BuyerId, p_ComponentId, p_Amount, p_PaymentMethod, 'Completed');
+
+      -- commit (trg_after_transaction_insert also runs, but commit here finalizes)
       COMMIT;
     END IF;
 END$$
 
-DELIMITER ;
-
--- ✅ Feedback procedure
-DROP PROCEDURE IF EXISTS AddFeedback;
-DELIMITER $$
-
+-- Feedback insertion
+DROP PROCEDURE IF EXISTS AddFeedback$$
 CREATE PROCEDURE AddFeedback(
   IN p_BuyerId INT,
   IN p_ComponentId INT,
@@ -170,24 +189,48 @@ BEGIN
   VALUES (p_BuyerId, p_ComponentId, p_Rating, p_Comments);
 END$$
 
+-- Reset a component (admin/testing)
+DROP PROCEDURE IF EXISTS ResetComponentStatus$$
+CREATE PROCEDURE ResetComponentStatus(IN p_ComponentId INT)
+BEGIN
+  UPDATE Components SET Status = 'Available' WHERE ComponentId = p_ComponentId;
+END$$
+
+-- Refund a transaction (admin): mark transaction Refunded and mark component Available
+DROP PROCEDURE IF EXISTS RefundTransaction$$
+CREATE PROCEDURE RefundTransaction(IN p_TransactionId INT)
+BEGIN
+  DECLARE comp_id INT;
+
+  SELECT ComponentId INTO comp_id
+  FROM Transactions
+  WHERE TransactionId = p_TransactionId;
+
+  UPDATE Transactions SET Status = 'Refunded' WHERE TransactionId = p_TransactionId;
+  UPDATE Components SET Status = 'Available' WHERE ComponentId = comp_id;
+END$$
+
 DELIMITER ;
 
 -- =======================================================
--- 5️⃣ SAMPLE DATA
+-- 4️⃣ SAMPLE DATA
 -- =======================================================
-
-INSERT INTO Users (FullName, Email, PasswordHash, Department)
+-- Users
+INSERT INTO Users (FullName, Email, PasswordHash, Department, Role)
 VALUES
-('Adarsh L', 'adarsh@campus.edu', '1234', 'CSE'),
-('Amar Sagar', 'amar@campus.edu', 'abcd', 'ECE'),
-('Priya R', 'priya@campus.edu', 'xyz', 'EEE'),
-('John Doe', 'john@campus.edu', 'qwerty', 'MECH');
+('Adarsh L', 'adarsh@campus.edu', '1234', 'CSE', 'student'),
+('Amar Sagar', 'amar@campus.edu', 'abcd', 'ECE', 'student'),
+('Priya R', 'priya@campus.edu', 'xyz', 'EEE', 'student'),
+('John Doe', 'john@campus.edu', 'qwerty', 'MECH', 'student'),
+('System Admin', 'admin@campus.edu', 'admin123', 'CSE', 'admin');
 
+-- Projects
 INSERT INTO Projects (Title, Description, UserId)
 VALUES
 ('Line Follower Robot', 'IR sensor-based robot project', 1),
 ('Smart Irrigation System', 'Automatic irrigation using soil moisture sensors', 2);
 
+-- Components (initial set)
 INSERT INTO Components (Name, Type, Price, ProjectId)
 VALUES
 ('Arduino UNO', 'Microcontroller', 450.00, 1),
@@ -195,69 +238,180 @@ VALUES
 ('Relay Module', 'Actuator', 200.00, 2),
 ('Soil Moisture Sensor', 'Sensor', 180.00, 2);
 
--- Buyer (Priya - ID 3) purchases Arduino UNO (ID 1)
+-- Extra demo available items
+INSERT INTO Components (Name, Type, Price, ProjectId)
+VALUES
+('Ultrasonic Sensor', 'Sensor', 150.00, 1),
+('Motor Driver', 'Actuator', 220.00, 2),
+('Bluetooth Module', 'Communication', 300.00, 1);
+
+-- Purchase: Priya (id=3) buys Arduino UNO (id=1) with exact amount
 CALL PurchaseComponent(3, 1, 450.00, 'UPI');
 
--- Buyer leaves feedback
+-- Add feedback for that component
 CALL AddFeedback(3, 1, 5, 'Perfect condition and smooth transaction!');
 
 -- =======================================================
--- 6️⃣ VIEWS (Readable summaries for dashboard & admin)
+-- 5️⃣ VIEWS (Admin & User friendly)
 -- =======================================================
+-- v_Users
+CREATE OR REPLACE VIEW v_Users AS
+SELECT UserId, FullName AS UserName, Email, Department, Role FROM Users ORDER BY UserId;
 
-CREATE OR REPLACE VIEW v_ComponentStatus AS
+-- v_Projects (owner displayed)
+CREATE OR REPLACE VIEW v_Projects AS
+SELECT p.ProjectId, p.Title AS ProjectTitle, u.UserId AS OwnerId, u.FullName AS OwnerName
+FROM Projects p
+JOIN Users u ON p.UserId = u.UserId
+ORDER BY p.ProjectId;
+
+-- v_Components (all components)
+CREATE OR REPLACE VIEW v_Components AS
+SELECT c.ComponentId, c.Name AS ComponentName, c.Type, c.Price, c.Status, p.ProjectId, p.Title AS ProjectTitle, u.UserId AS OwnerId, u.FullName AS OwnerName
+FROM Components c
+JOIN Projects p ON c.ProjectId = p.ProjectId
+JOIN Users u ON p.UserId = u.UserId
+ORDER BY c.ComponentId;
+
+
+
+SET SQL_SAFE_UPDATES = 0;
+
+UPDATE Components c
+SET c.Status = 'Available'
+WHERE NOT EXISTS (
+  SELECT 1 FROM Transactions t 
+  WHERE t.ComponentId = c.ComponentId 
+  AND t.Status = 'Completed'
+);
+
+SET SQL_SAFE_UPDATES = 1;
+
+-- v_AvailableItems: show items that are Available AND have no Completed transaction
+DROP VIEW IF EXISTS v_AvailableItems;
+CREATE OR REPLACE VIEW v_AvailableItems AS
 SELECT 
   c.ComponentId,
   c.Name AS ComponentName,
   c.Type,
   c.Price,
   c.Status,
+  p.ProjectId,
   p.Title AS ProjectTitle,
-  u.FullName AS SellerName,
-  u.Department
+  u.UserId AS SellerId,
+  u.FullName AS SellerName
 FROM Components c
 JOIN Projects p ON c.ProjectId = p.ProjectId
-JOIN Users u ON p.UserId = u.UserId;
+JOIN Users u ON p.UserId = u.UserId
+LEFT JOIN Transactions t ON t.ComponentId = c.ComponentId AND t.Status = 'Completed'
+WHERE c.Status = 'Available' AND t.TransactionId IS NULL
+ORDER BY c.Price ASC;
 
-CREATE OR REPLACE VIEW v_TransactionsDetailed AS
-SELECT 
-  t.TransactionId,
-  u.FullName AS BuyerName,
-  c.Name AS ComponentName,
-  c.Status AS ComponentStatus,
-  t.Amount,
-  t.PaymentMethod,
-  t.Status AS TransactionStatus,
-  t.TransactionDate
+-- v_Transactions: each transaction with buyer+seller+project+component
+CREATE OR REPLACE VIEW v_Transactions AS
+SELECT t.TransactionId,
+       b.UserId AS BuyerId, b.FullName AS BuyerName,
+       s.UserId AS SellerId, s.FullName AS SellerName,
+       p.ProjectId, p.Title AS ProjectTitle,
+       c.ComponentId, c.Name AS ComponentName,
+       t.Amount, t.PaymentMethod, t.Status AS TransactionStatus, t.TransactionDate
 FROM Transactions t
-JOIN Users u ON t.BuyerId = u.UserId
-JOIN Components c ON t.ComponentId = c.ComponentId;
+JOIN Users b ON t.BuyerId = b.UserId
+JOIN Components c ON t.ComponentId = c.ComponentId
+JOIN Projects p ON c.ProjectId = p.ProjectId
+JOIN Users s ON p.UserId = s.UserId
+ORDER BY t.TransactionDate DESC;
 
-CREATE OR REPLACE VIEW v_FeedbackDetailed AS
-SELECT 
-  f.FeedbackId,
-  b.FullName AS BuyerName,
-  c.Name AS ComponentName,
-  f.Rating,
-  f.Comments,
-  f.CreatedAt
+-- v_Feedback: feedback with buyer -> seller mapping
+CREATE OR REPLACE VIEW v_Feedback AS
+SELECT f.FeedbackId,
+       b.UserId AS FromUserId, b.FullName AS FromUserName,
+       s.UserId AS ToUserId, s.FullName AS ToUserName,
+       p.ProjectId, p.Title AS ProjectTitle,
+       c.ComponentId, c.Name AS ComponentName,
+       f.Rating, f.Comments, f.CreatedAt
 FROM Feedback f
 JOIN Users b ON f.BuyerId = b.UserId
-JOIN Components c ON f.ComponentId = c.ComponentId;
+JOIN Components c ON f.ComponentId = c.ComponentId
+JOIN Projects p ON c.ProjectId = p.ProjectId
+JOIN Users s ON p.UserId = s.UserId
+ORDER BY f.CreatedAt DESC;
 
--- =======================================================
--- 7️⃣ VERIFICATION (Run to confirm everything works)
--- =======================================================
-
-SELECT '✅ Campus Exchange setup successful!' AS Status;
-
-SHOW TABLES;
-USE campus_exchange;
-
+-- v_AdminOverview: join only latest completed transaction and latest feedback per component
+DROP VIEW IF EXISTS v_AdminOverview;
+CREATE OR REPLACE VIEW v_AdminOverview AS
+SELECT 
+  c.ComponentId,
+  c.Name AS ComponentName,
+  p.ProjectId,
+  p.Title AS ProjectTitle,
+  s.UserId AS SellerId,
+  s.FullName AS SellerName,
+  COALESCE(b.UserId, NULL) AS BuyerId,
+  COALESCE(b.FullName, 'Not Sold') AS BuyerName,
+  c.Status AS ComponentStatus,
+  COALESCE(t.Amount, c.Price) AS Amount,
+  COALESCE(t.PaymentMethod, 'Not Sold Yet') AS PaymentMethod,
+  t.TransactionDate,
+  f.Rating,
+  f.Comments
+FROM Components c
+JOIN Projects p ON c.ProjectId = p.ProjectId
+JOIN Users s ON p.UserId = s.UserId
+LEFT JOIN (
+  -- latest completed transaction per component
+  SELECT t1.*
+  FROM Transactions t1
+  JOIN (
+    SELECT ComponentId, MAX(TransactionDate) AS maxdt
+    FROM Transactions
+    WHERE Status = 'Completed'
+    GROUP BY ComponentId
+  ) tx ON tx.ComponentId = t1.ComponentId AND tx.maxdt = t1.TransactionDate
+  WHERE t1.Status = 'Completed'
+) t ON t.ComponentId = c.ComponentId
+LEFT JOIN Users b ON t.BuyerId = b.UserId
+LEFT JOIN (
+  -- latest feedback per component
+  SELECT f1.*
+  FROM Feedback f1
+  JOIN (
+    SELECT ComponentId, MAX(CreatedAt) AS maxd
+    FROM Feedback
+    GROUP BY ComponentId
+  ) fx ON fx.ComponentId = f1.ComponentId AND fx.maxd = f1.CreatedAt
+) f ON f.ComponentId = c.ComponentId
+ORDER BY c.Status DESC, c.ComponentId ASC;
  
- SELECT * FROM Transactions;
-SELECT * FROM Feedback;
-SELECT * FROM v_ComponentStatus;
-SELECT * FROM v_TransactionsDetailed;
-SELECT * FROM v_FeedbackDetailed;
+ 
+ 
+-- =======================================================
+-- 6️⃣ RESYNC (fix drift if any): run these once if you have inconsistent data
+-- (keeps Components.Status consistent with Completed transactions)
+UPDATE Components c
+SET c.Status = 'Sold'
+WHERE EXISTS (
+  SELECT 1 FROM Transactions t WHERE t.ComponentId = c.ComponentId AND t.Status = 'Completed'
+);
 
+UPDATE Components c
+SET c.Status = 'Available'
+WHERE NOT EXISTS (
+  SELECT 1 FROM Transactions t WHERE t.ComponentId = c.ComponentId AND t.Status = 'Completed'
+);
+
+-- =======================================================
+-- 7️⃣ VERIFICATION QUERIES (you can run these to inspect)
+SELECT '✅ Setup complete' AS Status;
+SELECT * FROM Users;
+
+SELECT * FROM v_Projects;
+SELECT * FROM v_Components;
+ SELECT * FROM v_Transactions;
+SELECT * FROM v_Feedback;
+ SELECT * FROM v_AvailableItems;
+SELECT * FROM v_AdminOverview;
+
+-- =======================================================
+-- End of script
+-- =======================================================
