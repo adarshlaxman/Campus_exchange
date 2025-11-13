@@ -1,6 +1,7 @@
 🏫 Campus Exchange – Project Component Marketplace
 A Full-Stack MERN-style Web App (Node.js + MySQL + HTML/CSS/JS)
 By Adarsh L (PES2UG23CS025) 
+
 📌 Overview
 
 Campus Exchange is a full-stack application that allows engineering students to buy, sell, and exchange project components within the campus.
